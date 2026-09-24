@@ -1,0 +1,356 @@
+name: 01 - A31 A32 Port Lab Toolbox
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TOOLSET_VERSION: "2026-09-24-v2"
+
+jobs:
+  toolbox:
+    name: Install and verify porting tools
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+
+      - name: Checkout lab repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Show runner
+        shell: bash
+        run: |
+          set -e
+          uname -a
+          lscpu | sed -n '1,20p'
+          free -h
+          df -h /
+
+      - name: Install core packages
+        shell: bash
+        run: |
+          set -e
+
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            bc \
+            bison \
+            build-essential \
+            cpio \
+            device-tree-compiler \
+            flex \
+            file \
+            git \
+            jq \
+            libelf-dev \
+            libdw-dev \
+            libncurses-dev \
+            libssl-dev \
+            lz4 \
+            p7zip-full \
+            perl \
+            python3 \
+            python3-pip \
+            python3-venv \
+            rsync \
+            tar \
+            unzip \
+            zip \
+            xz-utils \
+            zstd \
+            android-sdk-libsparse-utils \
+            android-tools-adb \
+            android-tools-fastboot \
+            u-boot-tools
+
+      - name: Install optional binary analysis package
+        shell: bash
+        run: |
+          set +e
+
+          sudo apt-get install -y binwalk
+
+          if command -v binwalk >/dev/null 2>&1; then
+            echo "binwalk=available"
+          else
+            echo "binwalk=not-installed"
+          fi
+
+      - name: Prepare tools directory
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p tools/bin
+          mkdir -p tools/src
+
+      - name: Restore tool cache
+        id: tool-cache
+        uses: actions/cache@v6
+        with:
+          path: tools
+          key: port-tools-${{ runner.os }}-${{ runner.arch }}-${{ env.TOOLSET_VERSION }}
+
+      - name: Install Android Image Kitchen
+        shell: bash
+        run: |
+          set -e
+
+          if [ ! -d tools/src/AIK-Linux/.git ]; then
+            rm -rf tools/src/AIK-Linux
+            git clone --depth 1 \
+              https://github.com/draekko/AIK-Linux.git \
+              tools/src/AIK-Linux
+          fi
+
+          test -f tools/src/AIK-Linux/unpackimg.sh
+          test -f tools/src/AIK-Linux/repackimg.sh
+
+          chmod +x \
+            tools/src/AIK-Linux/unpackimg.sh \
+            tools/src/AIK-Linux/repackimg.sh \
+            tools/src/AIK-Linux/cleanup.sh
+
+      - name: Install mkbootimg source
+        shell: bash
+        run: |
+          set -e
+
+          if [ ! -d tools/src/mkbootimg/.git ]; then
+            rm -rf tools/src/mkbootimg
+            git clone --depth 1 \
+              https://github.com/osm0sis/mkbootimg.git \
+              tools/src/mkbootimg
+          fi
+
+          test -f tools/src/mkbootimg/Makefile
+          test -f tools/src/mkbootimg/mkbootimg.c
+          test -f tools/src/mkbootimg/unpackbootimg.c
+
+      - name: Build mkbootimg tools
+        shell: bash
+        run: |
+          set -e
+
+          make -C tools/src/mkbootimg
+
+          test -x tools/src/mkbootimg/mkbootimg
+          test -x tools/src/mkbootimg/unpackbootimg
+
+          echo "mkbootimg build OK"
+
+      - name: Install AVB tool source
+        shell: bash
+        run: |
+          set -e
+
+          if [ ! -d tools/src/platform_external_avb/.git ]; then
+            rm -rf tools/src/platform_external_avb
+            git clone --depth 1 \
+              https://github.com/AndroidBootloader/platform_external_avb.git \
+              tools/src/platform_external_avb
+          fi
+
+          test -f tools/src/platform_external_avb/avbtool
+          test -f tools/src/platform_external_avb/avbtool.py
+
+          chmod +x tools/src/platform_external_avb/avbtool
+
+      - name: Install Patchlocator source
+        shell: bash
+        run: |
+          set -e
+
+          if [ ! -d tools/src/Patchlocator/.git ]; then
+            rm -rf tools/src/Patchlocator
+            git clone --depth 1 \
+              https://github.com/seclab-ucr/Patchlocator.git \
+              tools/src/Patchlocator
+          fi
+
+          test -f tools/src/Patchlocator/Overall_patch_locator.py
+          test -f tools/src/Patchlocator/Patch_locator.py
+
+          echo "Patchlocator source present"
+          echo "Patchlocator runtime adaptation deferred to analysis stage"
+
+      - name: Create unified tool links
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p tools/bin
+
+          ln -sf ../src/mkbootimg/mkbootimg \
+            tools/bin/mkbootimg
+
+          ln -sf ../src/mkbootimg/unpackbootimg \
+            tools/bin/unpackbootimg
+
+          ln -sf ../src/platform_external_avb/avbtool \
+            tools/bin/avbtool
+
+          ln -sf ../src/AIK-Linux/unpackimg.sh \
+            tools/bin/aik-unpackimg
+
+          ln -sf ../src/AIK-Linux/repackimg.sh \
+            tools/bin/aik-repackimg
+
+      - name: Verify required commands
+        shell: bash
+        run: |
+          set -e
+
+          export PATH="$GITHUB_WORKSPACE/tools/bin:$PATH"
+
+          echo "=== Kernel build tools ==="
+
+          command -v git
+          command -v gcc
+          command -v clang
+          command -v make
+          command -v bc
+          command -v bison
+          command -v flex
+          command -v cpio
+          command -v rsync
+
+          echo "=== Android image tools ==="
+
+          command -v simg2img
+          command -v img2simg
+          command -v dtc
+
+          echo "=== Compression ==="
+
+          command -v lz4
+          command -v xz
+          command -v zstd
+
+          echo "=== Port tools ==="
+
+          test -x tools/bin/mkbootimg
+          tools/bin/mkbootimg --help >/dev/null 2>&1 || true
+          echo "mkbootimg=OK"
+
+          test -x tools/bin/unpackbootimg
+          tools/bin/unpackbootimg --help >/dev/null 2>&1 || true
+          echo "unpackbootimg=OK"
+
+          test -x tools/bin/avbtool
+          python3 tools/bin/avbtool version || true
+          echo "avbtool=OK"
+
+          test -x tools/bin/aik-unpackimg
+          echo "aik-unpackimg=OK"
+
+          test -x tools/bin/aik-repackimg
+          echo "aik-repackimg=OK"
+
+          if command -v binwalk >/dev/null 2>&1; then
+            echo "binwalk=OK"
+          else
+            echo "binwalk=MISSING"
+          fi
+
+      - name: Check super image tools
+        shell: bash
+        run: |
+          set +e
+
+          echo "=== Super image tools ==="
+
+          if command -v lpunpack >/dev/null 2>&1; then
+            echo "lpunpack=OK"
+          else
+            echo "lpunpack=MISSING"
+          fi
+
+          if command -v lpmake >/dev/null 2>&1; then
+            echo "lpmake=OK"
+          else
+            echo "lpmake=MISSING"
+          fi
+
+      - name: Check tool sources
+        shell: bash
+        run: |
+          set -e
+
+          test -d tools/src/AIK-Linux
+          test -d tools/src/mkbootimg
+          test -d tools/src/platform_external_avb
+          test -d tools/src/Patchlocator
+
+          test -f tools/src/AIK-Linux/unpackimg.sh
+          test -f tools/src/AIK-Linux/repackimg.sh
+          test -f tools/src/platform_external_avb/avbtool.py
+
+          echo "All expected tool sources are present."
+
+      - name: Generate tool manifest
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p reports
+
+          {
+            echo "TOOLSET_VERSION=$TOOLSET_VERSION"
+            echo
+
+            echo "=== SYSTEM ==="
+            uname -a
+
+            echo
+            echo "=== RUNNER ==="
+            echo "RUNNER_OS=$RUNNER_OS"
+            echo "RUNNER_ARCH=${{ runner.arch }}"
+
+            echo
+            echo "=== COMMAND VERSIONS ==="
+            git --version
+            python3 --version
+            gcc --version | head -n1
+            clang --version | head -n1
+            make --version | head -n1
+            dtc --version
+            lz4 --version | head -n1
+            xz --version | head -n1
+            zstd --version | head -n1
+
+            echo
+            echo "=== ANDROID IMAGE ==="
+            simg2img --help | head -n3 || true
+            img2simg --help | head -n3 || true
+
+            echo
+            echo "=== TOOL SOURCES ==="
+            git -C tools/src/AIK-Linux rev-parse HEAD
+            git -C tools/src/mkbootimg rev-parse HEAD
+            git -C tools/src/platform_external_avb rev-parse HEAD
+            git -C tools/src/Patchlocator rev-parse HEAD
+
+            echo
+            echo "=== SUPER TOOLS ==="
+            command -v lpunpack || true
+            command -v lpmake || true
+
+          } > reports/tool-manifest.txt
+
+          cat reports/tool-manifest.txt
+
+      - name: Upload tool manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: a31-a32-tool-manifest-${{ github.run_number }}
+          path: reports/tool-manifest.txt
+          if-no-files-found: error
+          retention-days: 7
