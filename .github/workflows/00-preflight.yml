@@ -1,0 +1,43 @@
+name: A31 Port Lab - Preflight
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Show runner information
+        run: |
+          uname -a
+          lscpu
+          free -h
+          df -h
+
+      - name: Check required tools
+        run: |
+          git --version
+          python3 --version
+          gcc --version
+          clang --version || true
+          make --version
+          tar --version
+          xz --version
+          zstd --version || true
+          lz4 --version || true
+          cpio --version
+
+      - name: Test workspace
+        run: |
+          mkdir -p work
+          echo "A31/A32 port lab preflight OK" > work/status.txt
+          cat work/status.txt
+
+      - name: Report disk usage
+        run: |
+          df -h
+          du -sh work
