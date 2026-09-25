@@ -1,0 +1,28 @@
+name: 00-toolbox
+
+on:
+  workflow_dispatch:
+
+jobs:
+  toolbox:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore toolbox cache
+        uses: actions/cache@v4
+        with:
+          path: .ci-tools
+          key: toolbox-ubuntu24-v1-${{ hashFiles('ci/setup-tools.sh') }}
+
+      - name: Install toolbox
+        run: |
+          chmod +x ci/setup-tools.sh
+          ci/setup-tools.sh
+
+      - name: Final disk report
+        run: |
+          df -h /
+          du -sh .ci-tools 2>/dev/null || true
