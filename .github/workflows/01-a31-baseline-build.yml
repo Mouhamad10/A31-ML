@@ -1,0 +1,227 @@
+name: A31 Baseline Kernel Build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout A31
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Show repository state
+        shell: bash
+        run: |
+          set -eux
+          echo "Repository: $GITHUB_REPOSITORY"
+          echo "Commit: $(git rev-parse HEAD)"
+          echo "Branch: ${GITHUB_REF_NAME}"
+          echo "Kernel Makefile:"
+          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)' Makefile || true
+          echo
+          echo "Disk:"
+          df -h
+          echo
+          echo "Top-level:"
+          du -sh . 2>/dev/null || true
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -eux
+
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            bc \
+            bison \
+            build-essential \
+            cpio \
+            device-tree-compiler \
+            flex \
+            gcc-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi \
+            libelf-dev \
+            libncurses-dev \
+            libssl-dev \
+            lz4 \
+            python3 \
+            rsync \
+            unzip \
+            wget \
+            xz-utils \
+            zip \
+            zstd
+
+      - name: Cache LLVM toolchain
+        uses: actions/cache@v4
+        with:
+          path: toolchains/neutron-clang
+          key: neutron-clang-2023-07-29-v1
+
+      - name: Install LLVM toolchain
+        shell: bash
+        run: |
+          set -eux
+
+          mkdir -p toolchains
+
+          if [ ! -x toolchains/neutron-clang/bin/clang ]; then
+            rm -rf toolchains/neutron-clang
+            mkdir -p toolchains/neutron-clang
+
+            wget -q --show-progress \
+              "https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/29072023/neutron-clang-29072023.tar.zst" \
+              -O /tmp/neutron-clang.tar.zst
+
+            tar -I zstd \
+              -xf /tmp/neutron-clang.tar.zst \
+              -C toolchains/neutron-clang \
+              --strip-components=1
+          fi
+
+          test -x toolchains/neutron-clang/bin/clang
+          toolchains/neutron-clang/bin/clang --version
+
+      - name: Detect A31 defconfig
+        shell: bash
+        run: |
+          set -eux
+
+          if [ -f arch/arm64/configs/a31_defconfig ]; then
+            echo "DEFCONFIG=a31_defconfig" >> "$GITHUB_ENV"
+          else
+            echo "a31_defconfig was not found."
+            echo
+            echo "Available likely A31 configs:"
+            find arch/arm64/configs \
+              -maxdepth 1 \
+              -type f \
+              \( -iname '*a31*' -o -iname '*mt6768*' \) \
+              -print \
+              | sort
+
+            exit 1
+          fi
+
+      - name: Prepare build
+        shell: bash
+        run: |
+          set -eux
+
+          export PATH="$GITHUB_WORKSPACE/toolchains/neutron-clang/bin:$PATH"
+
+          rm -rf out
+          mkdir -p out
+
+          make \
+            O=out \
+            ARCH=arm64 \
+            "$DEFCONFIG"
+
+      - name: Build kernel
+        shell: bash
+        run: |
+          set -o pipefail
+
+          export PATH="$GITHUB_WORKSPACE/toolchains/neutron-clang/bin:$PATH"
+
+          make \
+            -j"$(nproc)" \
+            O=out \
+            ARCH=arm64 \
+            CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            AS=llvm-as \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            Image \
+            2>&1 | tee kernel-build.log
+
+      - name: Verify kernel output
+        shell: bash
+        run: |
+          set -eux
+
+          test -f out/arch/arm64/boot/Image
+
+          echo "Kernel Image:"
+          ls -lh out/arch/arm64/boot/Image
+
+          echo
+          echo "Kernel identification:"
+          file out/arch/arm64/boot/Image
+
+          echo
+          echo "Generated static libraries:"
+          find out -type f -name '*.a' | sort | head -n 100
+
+          echo
+          echo "Static library size:"
+          find out -type f -name '*.a' -print0 \
+            | xargs -0 du -ch \
+            | tail -n 1 || true
+
+      - name: Collect build artifacts
+        shell: bash
+        run: |
+          set -eux
+
+          mkdir -p artifacts
+
+          cp out/arch/arm64/boot/Image \
+            artifacts/Image
+
+          if [ -f out/arch/arm64/boot/Image.gz ]; then
+            cp out/arch/arm64/boot/Image.gz \
+              artifacts/Image.gz
+          fi
+
+          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            cp out/arch/arm64/boot/Image.gz-dtb \
+              artifacts/Image.gz-dtb
+          fi
+
+          if [ -f out/.config ]; then
+            cp out/.config artifacts/kernel.config
+          fi
+
+          if [ -f System.map ]; then
+            cp System.map artifacts/System.map
+          fi
+
+          if [ -f out/System.map ]; then
+            cp out/System.map artifacts/System.map
+          fi
+
+          if [ -f out/Module.symvers ]; then
+            cp out/Module.symvers artifacts/Module.symvers
+          fi
+
+          cp kernel-build.log artifacts/kernel-build.log
+
+          find out -type f -name '*.a' \
+            -printf '%p\n' \
+            | sort \
+            > artifacts/static-libraries.txt
+
+      - name: Upload kernel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: a31-kernel-baseline-${{ github.sha }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 6
