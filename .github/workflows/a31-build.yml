@@ -1,4 +1,4 @@
-name: A31 UI6 Kernel Build Test
+name: A31 Kernel Build Test
 
 on:
   workflow_dispatch:
@@ -12,23 +12,33 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
       - name: Checkout A31 kernel
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - name: Show source information
+      - name: Show repository
         shell: bash
         run: |
           set -e
-          echo "Repository: $GITHUB_REPOSITORY"
-          echo "Commit: $GITHUB_SHA"
-          echo "Branch: $GITHUB_REF_NAME"
+
+          echo "Repository:"
+          pwd
+
+          echo
+          echo "Top-level files:"
+          ls -lah
+
+          echo
           echo "Kernel Makefile:"
-          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION) ?=' Makefile || true
-          echo "Architecture directory:"
+          test -f Makefile
+          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)[[:space:]]*=' Makefile || true
+
+          echo
+          echo "Architecture:"
           test -d arch/arm64
-          echo "OK"
+          echo "arm64 source found"
 
       - name: Install build dependencies
         shell: bash
@@ -47,12 +57,11 @@ jobs:
             lz4 \
             openssl \
             python3 \
-            python3-pip \
             unzip \
             xz-utils \
             zip
 
-      - name: Prepare toolchain
+      - name: Prepare Proton Clang
         shell: bash
         run: |
           set -e
@@ -65,31 +74,22 @@ jobs:
 
           echo "$GITHUB_WORKSPACE/toolchain/proton-clang/bin" >> "$GITHUB_PATH"
 
+      - name: Show defconfig candidates
+        shell: bash
+        run: |
+          set -e
+
+          echo "Defconfig files:"
+          find arch/arm64/configs \
+            -maxdepth 1 \
+            -type f \
+            -printf '%f\n' \
+            | sort
+
       - name: Detect A31 defconfig
         shell: bash
         run: |
           set -e
-
-          echo "Searching for A31/MT6768 defconfigs..."
-
-          find arch/arm64/configs -maxdepth 1 -type f \
-            | sort \
-            | grep -Ei 'a31|a315|mt6768|mtk' \
-            || true
-
-          echo "Top-level defconfig candidates:"
-          grep -Ril \
-            -E 'CONFIG_MTK|CONFIG_MACH_MT6768|A315|A31' \
-            arch/arm64/configs 2>/dev/null \
-            | head -50 \
-            || true
-
-      - name: Prepare kernel configuration
-        shell: bash
-        run: |
-          set -e
-
-          mkdir -p out
 
           DEFCONFIG=""
 
@@ -107,82 +107,103 @@ jobs:
           done
 
           if test -z "$DEFCONFIG"; then
-            echo "No automatic A31 defconfig name found."
-            echo "Available arm64 configs:"
-            find arch/arm64/configs -maxdepth 1 -type f \
+            echo "No automatic A31 defconfig was found."
+            echo
+            echo "Available candidates:"
+            find arch/arm64/configs \
+              -maxdepth 1 \
+              -type f \
+              -printf '%f\n' \
               | sort \
-              | sed 's#arch/arm64/configs/##' \
               | head -200
+
             exit 2
           fi
 
+          echo "DEFCONFIG=$DEFCONFIG" >> "$GITHUB_ENV"
           echo "Selected defconfig: $DEFCONFIG"
 
-          make O=out ARCH=arm64 "$DEFCONFIG"
+      - name: Prepare kernel configuration
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p out
+
+          make O=out \
+            ARCH=arm64 \
+            CC=clang \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            "$DEFCONFIG"
 
       - name: Build kernel
         shell: bash
         run: |
           set -e
 
-          export ARCH=arm64
-          export SUBARCH=arm64
-
           make O=out \
             ARCH=arm64 \
+            CC=clang \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             -j"$(nproc)"
 
-      - name: Check build outputs
+      - name: Verify kernel output
         shell: bash
         run: |
           set -e
 
-          echo "Searching kernel outputs..."
-
+          echo "Boot output:"
           find out/arch/arm64/boot \
             -maxdepth 2 \
             -type f \
             | sort
 
-          test -f out/arch/arm64/boot/Image \
-            || test -f out/arch/arm64/boot/Image.gz \
-            || test -f out/arch/arm64/boot/Image.gz-dtb
+          if test -f out/arch/arm64/boot/Image; then
+            echo "Image found"
+          elif test -f out/arch/arm64/boot/Image.gz; then
+            echo "Image.gz found"
+          elif test -f out/arch/arm64/boot/Image.gz-dtb; then
+            echo "Image.gz-dtb found"
+          else
+            echo "No kernel image found"
+            exit 3
+          fi
 
-      - name: Package raw kernel outputs
+      - name: Collect build information
         shell: bash
         run: |
           set -e
 
           mkdir -p artifact
 
-          if test -f out/arch/arm64/boot/Image.gz-dtb; then
-            cp out/arch/arm64/boot/Image.gz-dtb artifact/
+          cp out/.config artifact/kernel.config
+
+          if test -f out/arch/arm64/boot/Image; then
+            cp out/arch/arm64/boot/Image artifact/
           fi
 
           if test -f out/arch/arm64/boot/Image.gz; then
             cp out/arch/arm64/boot/Image.gz artifact/
           fi
 
-          if test -f out/arch/arm64/boot/Image; then
-            cp out/arch/arm64/boot/Image artifact/
+          if test -f out/arch/arm64/boot/Image.gz-dtb; then
+            cp out/arch/arm64/boot/Image.gz-dtb artifact/
           fi
 
-          find out/arch/arm64/boot \
-            -maxdepth 2 \
-            -type f \
-            \( -name '*.dtb' -o -name '*.img' -o -name 'dtbo.img' \) \
-            -exec cp {} artifact/ \; \
-            || true
-
-          cp out/.config artifact/kernel.config
-
-          printf 'Build commit: %s\n' "$GITHUB_SHA" > artifact/build-info.txt
-          printf 'Build ref: %s\n' "$GITHUB_REF_NAME" >> artifact/build-info.txt
+          {
+            echo "Repository=$GITHUB_REPOSITORY"
+            echo "Commit=$GITHUB_SHA"
+            echo "Ref=$GITHUB_REF_NAME"
+            echo "Defconfig=$DEFCONFIG"
+            echo "KernelVersion=$(make -s O=out kernelversion)"
+          } > artifact/build-info.txt
 
       - name: Upload kernel artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: A31-UI6-kernel-test
+          name: A31-kernel-build-test
           path: artifact/
           if-no-files-found: error
           retention-days: 7
