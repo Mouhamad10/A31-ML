@@ -1,0 +1,360 @@
+name: A31 Port Lab - Preflight + Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+
+    steps:
+
+      - name: Checkout kernel source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Show runner information
+        shell: bash
+        run: |
+          set -e
+          uname -a
+          echo
+          lscpu
+          echo
+          free -h
+          echo
+          df -h
+
+      - name: Check source identity
+        shell: bash
+        run: |
+          set -e
+
+          echo "COMMIT=$(git rev-parse HEAD)"
+          echo "BRANCH=$(git branch --show-current)"
+
+          echo
+          echo "Kernel Makefile:"
+          test -f Makefile
+          grep -E '^VERSION =|^PATCHLEVEL =|^SUBLEVEL =|^EXTRAVERSION =' Makefile || true
+
+          echo
+          echo "A31 defconfig:"
+          test -f arch/arm64/configs/a31_defconfig
+          echo "FOUND=arch/arm64/configs/a31_defconfig"
+
+      - name: Check base tools
+        shell: bash
+        run: |
+          set -e
+
+          git --version
+          python3 --version
+          make --version
+          gcc --version
+          tar --version
+          xz --version
+
+          echo
+          echo "Optional tools:"
+          clang --version || true
+          zstd --version || true
+          lz4 --version || true
+          cpio --version || true
+
+      - name: Report workspace
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p work
+
+          printf '%s\n' \
+            "A31/A32 Port Lab preflight OK" \
+            > work/status.txt
+
+          cat work/status.txt
+
+          echo
+          df -h
+          du -sh . || true
+
+  build-kernel:
+    name: Build A31 Kernel Image
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    permissions:
+      contents: read
+
+    steps:
+
+      - name: Checkout kernel source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -e
+
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            bc \
+            bison \
+            build-essential \
+            ccache \
+            flex \
+            gcc-aarch64-linux-gnu \
+            git \
+            libelf-dev \
+            libncurses-dev \
+            libssl-dev \
+            lz4 \
+            device-tree-compiler \
+            python3 \
+            rsync \
+            unzip \
+            xz-utils \
+            zip
+
+      - name: Enable ccache
+        shell: bash
+        run: |
+          set -e
+
+          echo "/usr/lib/ccache" >> "$GITHUB_PATH"
+
+          mkdir -p "$HOME/.cache/ccache"
+
+          ccache --set-config=cache_dir="$HOME/.cache/ccache"
+          ccache --set-config=max_size=2G
+          ccache --zero-stats
+
+          echo "ccache configuration:"
+          ccache --show-config
+
+      - name: Restore ccache
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.HOME }}/.cache/ccache
+          key: ${{ runner.os }}-a31-kernel-${{ hashFiles('Makefile', 'arch/arm64/configs/a31_defconfig') }}
+          restore-keys: |
+            ${{ runner.os }}-a31-kernel-
+
+      - name: Show compiler
+        shell: bash
+        run: |
+          set -e
+
+          which aarch64-linux-gnu-gcc
+          aarch64-linux-gnu-gcc --version
+
+          echo
+          which gcc
+          gcc --version
+
+      - name: Inspect A31 configuration
+        shell: bash
+        run: |
+          set -e
+
+          echo "A31 defconfig:"
+          sed -n '1,220p' arch/arm64/configs/a31_defconfig > /tmp/a31_defconfig_preview
+          cat /tmp/a31_defconfig_preview
+
+          echo
+          echo "BPF configuration entries:"
+          grep -E '^CONFIG_(BPF|BPF_SYSCALL|BPF_JIT|BPF_EVENTS|CGROUP_BPF)' \
+            arch/arm64/configs/a31_defconfig || true
+
+      - name: Prepare kernel configuration
+        shell: bash
+        env:
+          ARCH: arm64
+          CROSS_COMPILE: aarch64-linux-gnu-
+        run: |
+          set -e
+
+          rm -rf out
+          mkdir -p out
+
+          make \
+            O=out \
+            ARCH="$ARCH" \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            a31_defconfig
+
+          test -f out/.config
+
+          echo
+          echo "Kernel version:"
+          make \
+            O=out \
+            ARCH="$ARCH" \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            -s kernelversion
+
+          echo
+          echo "Generated BPF configuration:"
+          grep -E '^CONFIG_(BPF|BPF_SYSCALL|BPF_JIT|BPF_EVENTS|CGROUP_BPF)' \
+            out/.config || true
+
+      - name: Record kernel identity
+        shell: bash
+        run: |
+          set -e
+
+          KVER="$(make -s O=out ARCH=arm64 kernelversion)"
+
+          echo "COMMIT=$(git rev-parse HEAD)" > build-version.txt
+          echo "BRANCH=$(git branch --show-current)" >> build-version.txt
+          echo "KERNEL_VERSION=$KVER" >> build-version.txt
+          echo "DEFCONFIG=a31_defconfig" >> build-version.txt
+          echo "ARCH=arm64" >> build-version.txt
+          echo "CROSS_COMPILE=aarch64-linux-gnu-" >> build-version.txt
+
+          cat build-version.txt
+
+      - name: Build kernel
+        shell: bash
+        env:
+          ARCH: arm64
+          CROSS_COMPILE: aarch64-linux-gnu-
+          KCFLAGS: -fgnu89-inline
+          KBUILD_BUILD_USER: github-actions
+          KBUILD_BUILD_HOST: github-runner
+        run: |
+          set -o pipefail
+
+          make \
+            O=out \
+            ARCH="$ARCH" \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            KCFLAGS="$KCFLAGS" \
+            KBUILD_BUILD_USER="$KBUILD_BUILD_USER" \
+            KBUILD_BUILD_HOST="$KBUILD_BUILD_HOST" \
+            -j"$(nproc)" \
+            Image.gz \
+            dtbs \
+            2>&1 | tee build.log
+
+      - name: Locate kernel and DTB files
+        shell: bash
+        run: |
+          set -e
+
+          test -s out/arch/arm64/boot/Image.gz
+
+          echo "Image:"
+          ls -lh out/arch/arm64/boot/Image.gz
+
+          echo
+          echo "All DTBs:"
+          find out/arch/arm64/boot \
+            -type f \
+            -name '*.dtb' \
+            -print | sort
+
+          DTB=""
+
+          DTB="$(find out/arch/arm64/boot \
+            -type f \
+            -name 'mt6768*.dtb' \
+            -print -quit || true)"
+
+          if [ -z "$DTB" ]; then
+            DTB="$(find out/arch/arm64/boot \
+              -type f \
+              -name '*.dtb' \
+              -print -quit || true)"
+          fi
+
+          if [ -z "$DTB" ]; then
+            echo "ERROR: No DTB was produced."
+            exit 1
+          fi
+
+          echo
+          echo "Selected DTB:"
+          echo "$DTB"
+
+          echo "DTB=$DTB" > dtb-location.txt
+
+          cp out/arch/arm64/boot/Image.gz Image.gz
+          cp "$DTB" selected.dtb
+
+      - name: Create kernel payload artifacts
+        shell: bash
+        run: |
+          set -e
+
+          cat Image.gz selected.dtb > Image.gz-dtb
+
+          cp Image.gz-dtb kernel.img
+
+          echo "Kernel payload files:"
+          ls -lh \
+            Image.gz \
+            selected.dtb \
+            Image.gz-dtb \
+            kernel.img
+
+      - name: Validate kernel artifacts
+        shell: bash
+        run: |
+          set -e
+
+          test -s Image.gz
+          test -s selected.dtb
+          test -s Image.gz-dtb
+          test -s kernel.img
+
+          echo
+          echo "Image.gz:"
+          file Image.gz
+
+          echo
+          echo "DTB:"
+          file selected.dtb
+
+          echo
+          echo "Image.gz-dtb:"
+          file Image.gz-dtb
+
+          echo
+          echo "kernel.img:"
+          file kernel.img
+
+      - name: Show ccache statistics
+        shell: bash
+        run: |
+          ccache --show-stats || true
+
+      - name: Upload kernel artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: A31-kernel-candidate-${{ github.sha }}
+          path: |
+            Image.gz
+            selected.dtb
+            Image.gz-dtb
+            kernel.img
+            build.log
+            build-version.txt
+            dtb-location.txt
+          if-no-files-found: error
+          retention-days: 7
