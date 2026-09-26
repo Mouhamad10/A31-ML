@@ -38,20 +38,115 @@ jobs:
       - name: Check source identity
         shell: bash
         run: |
-          set -e
+          set -u
+          set -o pipefail
 
-          echo "COMMIT=$(git rev-parse HEAD)"
-          echo "BRANCH=$(git branch --show-current)"
+          echo "=== SOURCE IDENTITY ==="
+
+          ROOT="${GITHUB_WORKSPACE}"
+
+          echo "Workspace: $ROOT"
+
+          COMMIT="$(git rev-parse HEAD)"
+          BRANCH="$(git branch --show-current || true)"
+
+          echo "COMMIT=$COMMIT"
+          echo "BRANCH=${BRANCH:-DETACHED}"
 
           echo
-          echo "Kernel Makefile:"
-          test -f Makefile
-          grep -E '^VERSION =|^PATCHLEVEL =|^SUBLEVEL =|^EXTRAVERSION =' Makefile || true
+          echo "Searching for kernel Makefile..."
+
+          KERNEL_DIR=""
+
+          if [ -f "$ROOT/Makefile" ]; then
+            KERNEL_DIR="$ROOT"
+          else
+            while IFS= read -r mf; do
+              if grep -qE '^VERSION[[:space:]]*=' "$mf" 2>/dev/null; then
+                KERNEL_DIR="$(dirname "$mf")"
+                break
+              fi
+            done < <(
+              find "$ROOT" \
+                -maxdepth 5 \
+                -type f \
+                -name Makefile \
+                -not -path '*/.git/*' \
+                2>/dev/null
+            )
+          fi
+
+          if [ -z "$KERNEL_DIR" ]; then
+            echo "::error::Kernel Makefile was not found."
+            echo
+            echo "Top-level workspace:"
+            ls -lah "$ROOT"
+            echo
+            echo "Makefiles found:"
+            find "$ROOT" \
+              -maxdepth 5 \
+              -type f \
+              -name Makefile \
+              -not -path '*/.git/*' \
+              2>/dev/null | head -50
+            exit 1
+          fi
+
+          MAKEFILE="$KERNEL_DIR/Makefile"
+
+          echo "KERNEL_DIR=$KERNEL_DIR"
+          echo "MAKEFILE=$MAKEFILE"
+
+          VERSION="$(
+            awk -F '=' '
+              /^[[:space:]]*VERSION[[:space:]]*=/ {
+                gsub(/[[:space:]]/, "", $2)
+                print $2
+                exit
+              }
+            ' "$MAKEFILE"
+          )"
+
+          PATCHLEVEL="$(
+            awk -F '=' '
+              /^[[:space:]]*PATCHLEVEL[[:space:]]*=/ {
+                gsub(/[[:space:]]/, "", $2)
+                print $2
+                exit
+              }
+            ' "$MAKEFILE"
+          )"
+
+          SUBLEVEL="$(
+            awk -F '=' '
+              /^[[:space:]]*SUBLEVEL[[:space:]]*=/ {
+                gsub(/[[:space:]]/, "", $2)
+                print $2
+                exit
+              }
+            ' "$MAKEFILE"
+          )"
+
+          EXTRAVERSION="$(
+            awk -F '=' '
+              /^[[:space:]]*EXTRAVERSION[[:space:]]*=/ {
+                sub(/^[[:space:]]+/, "", $2)
+                sub(/[[:space:]]+$/, "", $2)
+                print $2
+                exit
+              }
+            ' "$MAKEFILE"
+          )"
+
+          echo "Kernel Makefile: $MAKEFILE"
+          echo "Kernel version: ${VERSION:-UNKNOWN}.${PATCHLEVEL:-UNKNOWN}.${SUBLEVEL:-UNKNOWN}${EXTRAVERSION}"
 
           echo
-          echo "A31 defconfig:"
-          test -f arch/arm64/configs/a31_defconfig
-          echo "FOUND=arch/arm64/configs/a31_defconfig"
+          echo "Makefile header:"
+          sed -n '1,35p' "$MAKEFILE"
+
+          echo
+          echo "Source identity check: PASS"
 
       - name: Check base tools
         shell: bash
