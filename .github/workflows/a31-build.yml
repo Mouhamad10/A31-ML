@@ -1,0 +1,188 @@
+name: A31 UI6 Kernel Build Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Samsung A31 Kernel
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout A31 kernel
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Show source information
+        shell: bash
+        run: |
+          set -e
+          echo "Repository: $GITHUB_REPOSITORY"
+          echo "Commit: $GITHUB_SHA"
+          echo "Branch: $GITHUB_REF_NAME"
+          echo "Kernel Makefile:"
+          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION) ?=' Makefile || true
+          echo "Architecture directory:"
+          test -d arch/arm64
+          echo "OK"
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -e
+
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            bc \
+            bison \
+            build-essential \
+            flex \
+            libelf-dev \
+            libssl-dev \
+            lz4 \
+            openssl \
+            python3 \
+            python3-pip \
+            unzip \
+            xz-utils \
+            zip
+
+      - name: Prepare toolchain
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p "$GITHUB_WORKSPACE/toolchain"
+
+          git clone --depth=1 \
+            https://github.com/kdrag0n/proton-clang \
+            "$GITHUB_WORKSPACE/toolchain/proton-clang"
+
+          echo "$GITHUB_WORKSPACE/toolchain/proton-clang/bin" >> "$GITHUB_PATH"
+
+      - name: Detect A31 defconfig
+        shell: bash
+        run: |
+          set -e
+
+          echo "Searching for A31/MT6768 defconfigs..."
+
+          find arch/arm64/configs -maxdepth 1 -type f \
+            | sort \
+            | grep -Ei 'a31|a315|mt6768|mtk' \
+            || true
+
+          echo "Top-level defconfig candidates:"
+          grep -Ril \
+            -E 'CONFIG_MTK|CONFIG_MACH_MT6768|A315|A31' \
+            arch/arm64/configs 2>/dev/null \
+            | head -50 \
+            || true
+
+      - name: Prepare kernel configuration
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p out
+
+          DEFCONFIG=""
+
+          for candidate in \
+            a31_defconfig \
+            a315_defconfig \
+            a315f_defconfig \
+            mt6768_defconfig \
+            mt6768_defconfig_a31
+          do
+            if test -f "arch/arm64/configs/$candidate"; then
+              DEFCONFIG="$candidate"
+              break
+            fi
+          done
+
+          if test -z "$DEFCONFIG"; then
+            echo "No automatic A31 defconfig name found."
+            echo "Available arm64 configs:"
+            find arch/arm64/configs -maxdepth 1 -type f \
+              | sort \
+              | sed 's#arch/arm64/configs/##' \
+              | head -200
+            exit 2
+          fi
+
+          echo "Selected defconfig: $DEFCONFIG"
+
+          make O=out ARCH=arm64 "$DEFCONFIG"
+
+      - name: Build kernel
+        shell: bash
+        run: |
+          set -e
+
+          export ARCH=arm64
+          export SUBARCH=arm64
+
+          make O=out \
+            ARCH=arm64 \
+            -j"$(nproc)"
+
+      - name: Check build outputs
+        shell: bash
+        run: |
+          set -e
+
+          echo "Searching kernel outputs..."
+
+          find out/arch/arm64/boot \
+            -maxdepth 2 \
+            -type f \
+            | sort
+
+          test -f out/arch/arm64/boot/Image \
+            || test -f out/arch/arm64/boot/Image.gz \
+            || test -f out/arch/arm64/boot/Image.gz-dtb
+
+      - name: Package raw kernel outputs
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p artifact
+
+          if test -f out/arch/arm64/boot/Image.gz-dtb; then
+            cp out/arch/arm64/boot/Image.gz-dtb artifact/
+          fi
+
+          if test -f out/arch/arm64/boot/Image.gz; then
+            cp out/arch/arm64/boot/Image.gz artifact/
+          fi
+
+          if test -f out/arch/arm64/boot/Image; then
+            cp out/arch/arm64/boot/Image artifact/
+          fi
+
+          find out/arch/arm64/boot \
+            -maxdepth 2 \
+            -type f \
+            \( -name '*.dtb' -o -name '*.img' -o -name 'dtbo.img' \) \
+            -exec cp {} artifact/ \; \
+            || true
+
+          cp out/.config artifact/kernel.config
+
+          printf 'Build commit: %s\n' "$GITHUB_SHA" > artifact/build-info.txt
+          printf 'Build ref: %s\n' "$GITHUB_REF_NAME" >> artifact/build-info.txt
+
+      - name: Upload kernel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: A31-UI6-kernel-test
+          path: artifact/
+          if-no-files-found: error
+          retention-days: 7
