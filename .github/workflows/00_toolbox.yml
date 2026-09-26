@@ -1,0 +1,129 @@
+name: "00 - Toolbox Bootstrap"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  toolbox:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Show runner information
+        shell: bash
+        run: |
+          set -eux
+
+          echo "=== CPU ==="
+          nproc
+
+          echo "=== MEMORY ==="
+          free -h
+
+          echo "=== DISK ==="
+          df -h /
+
+          echo "=== KERNEL ==="
+          uname -a
+
+          echo "=== OS ==="
+          cat /etc/os-release
+
+      - name: Install base packages
+        shell: bash
+        run: |
+          set -eux
+
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            bc \
+            bison \
+            build-essential \
+            cpio \
+            curl \
+            device-tree-compiler \
+            flex \
+            git \
+            libelf-dev \
+            libncurses-dev \
+            libssl-dev \
+            lz4 \
+            pahole \
+            python3 \
+            python3-pip \
+            rsync \
+            unzip \
+            wget \
+            xz-utils \
+            zip \
+            zstd
+
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+
+      - name: Verify toolbox
+        shell: bash
+        run: |
+          set -u
+
+          echo "=== TOOLBOX VERSION CHECK ==="
+
+          check_tool() {
+            name="$1"
+            shift
+
+            if "$@" >/tmp/toolbox_check.txt 2>&1; then
+              echo "OK     $name"
+              sed -n '1,2p' /tmp/toolbox_check.txt
+            else
+              echo "FAIL   $name"
+              sed -n '1,10p' /tmp/toolbox_check.txt
+              return 1
+            fi
+          }
+
+          check_tool git git --version
+          check_tool python3 python3 --version
+          check_tool bc bc --version
+          check_tool bison bison --version
+          check_tool flex flex --version
+          check_tool dtc dtc --version
+          check_tool lz4 lz4 --version
+          check_tool pahole pahole --version
+          check_tool rsync rsync --version
+          check_tool cpio cpio --version
+          check_tool unzip unzip -v
+          check_tool zip zip -v
+          check_tool zstd zstd --version
+
+          echo "=== TOOLBOX CHECK COMPLETE ==="
+
+      - name: Check important host commands
+        shell: bash
+        run: |
+          set -eux
+
+          command -v git
+          command -v make
+          command -v gcc
+          command -v ld
+          command -v ar
+          command -v objcopy
+          command -v readelf
+          command -v strip
+          command -v tar
+          command -v gzip
+
+      - name: Report final disk usage
+        shell: bash
+        run: |
+          set -eux
+
+          echo "=== FINAL DISK ==="
+          df -h /
+
+          echo "=== ROOT USAGE ==="
+          sudo du -xh -d1 / 2>/dev/null | sort -h | tail -n 20
