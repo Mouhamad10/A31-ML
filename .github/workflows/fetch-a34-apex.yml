@@ -1,4 +1,4 @@
-name: Fetch A34 One UI 8 APEX targets
+name: Discover A34 One UI 8 APEX targets
 
 on:
   workflow_dispatch:
@@ -7,60 +7,80 @@ permissions:
   contents: read
 
 jobs:
-  fetch:
+  discover:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 20
 
     env:
       DONOR_REPO: https://gitlab.com/oifaaahyeah/a34xdxx-user-16-BP2A.250605.031.A3-A346EXXUAEYI7-release-keys.git
-      OUT_DIR: a34-apex-targets
 
     steps:
-      - name: Show runner disk
+      - name: Show runner environment
+        shell: bash
         run: |
-          df -h
+          set -e
           git --version
+          df -h
 
       - name: Install Git LFS
+        shell: bash
         run: |
+          set -e
           sudo apt-get update
           sudo apt-get install -y git-lfs
           git lfs install
 
-      - name: Clone donor metadata
+      - name: Clone donor metadata only
+        shell: bash
         run: |
+          set -e
           git clone --depth=1 --filter=blob:none --no-checkout "$DONOR_REPO" donor
           cd donor
-          git sparse-checkout init --no-cone
-          git sparse-checkout set \
-            system/apex/com.android.tethering.apex \
-            system/apex/com.android.media.apex \
-            system/apex/com.android.media.swcodec.apex
-          git checkout
+          git lfs install
+          git rev-parse HEAD
+          git branch --show-current
+          git ls-tree -r --name-only HEAD > ../donor-tree.txt
 
-      - name: Verify expected APEX files
+      - name: Build discovery report
+        shell: bash
         run: |
-          test -f donor/system/apex/com.android.tethering.apex
-          test -f donor/system/apex/com.android.media.apex
-          test -f donor/system/apex/com.android.media.swcodec.apex
+          set -e
+          mkdir -p report
 
-      - name: Create evidence and archive
-        run: |
-          mkdir -p "$OUT_DIR"
-          cp donor/system/apex/com.android.tethering.apex "$OUT_DIR/"
-          cp donor/system/apex/com.android.media.apex "$OUT_DIR/"
-          cp donor/system/apex/com.android.media.swcodec.apex "$OUT_DIR/"
-          sha256sum "$OUT_DIR"/*.apex | tee "$OUT_DIR/SHA256SUMS.txt"
-          ls -lh "$OUT_DIR" | tee "$OUT_DIR/FILES.txt"
-          tar -czf a34-oneui8-apex-targets.tar.gz "$OUT_DIR"
+          {
+            echo "DONOR_REPO=$DONOR_REPO"
+            echo
+            echo "=== Total tracked paths ==="
+            wc -l donor-tree.txt
+            echo
+            echo "=== Tethering matches ==="
+            grep -i tethering donor-tree.txt || true
+            echo
+            echo "=== Media matches ==="
+            grep -i media donor-tree.txt || true
+            echo
+            echo "=== APEX matches ==="
+            grep -i apex donor-tree.txt || true
+            echo
+            echo "=== Connectivity matches ==="
+            grep -i connectivity donor-tree.txt || true
+            echo
+            echo "=== Exact target-like matches ==="
+            grep -Ei 'com.(android|google.android).(tethering|media|media.swcodec).*.(apex|capex)$' donor-tree.txt || true
+          } > report/discovery.txt
 
-      - name: Upload APEX archive
+          cp donor-tree.txt report/donor-tree.txt
+
+          git -C donor rev-parse HEAD > report/donor-head.txt
+          git -C donor log -1 --format=fuller > report/donor-head-commit.txt
+
+          ls -lh report
+          cat report/discovery.txt
+
+      - name: Upload discovery report
         uses: actions/upload-artifact@v4
         with:
-          name: a34-oneui8-apex-targets
-          path: |
-            a34-oneui8-apex-targets.tar.gz
-            a34-apex-targets/SHA256SUMS.txt
-            a34-apex-targets/FILES.txt
+          name: a34-donor-discovery
+          path: report
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 3
