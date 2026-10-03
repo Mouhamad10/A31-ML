@@ -1,0 +1,88 @@
+name: Fetch A34 One UI 8 Mainline APEX Targets
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    env:
+      DONOR_REPO: https://gitlab.com/oifaaahyeah/a34xdxx-user-16-BP2A.250605.031.A3-A346EXXUAEYI7-release-keys.git
+      DONOR_TETHERING: system/system/apex/com.google.android.tethering_compressed.apex
+      DONOR_MEDIA: system/system/apex/com.google.android.media_compressed.apex
+      DONOR_SWCODEC: system/system/apex/com.google.android.media.swcodec_compressed.apex
+      OUT_DIR: a34-oneui8-google-apex
+
+    steps:
+      - name: Show runner environment
+        shell: bash
+        run: |
+          set -e
+          git --version
+          df -h
+
+      - name: Install inspection tools
+        shell: bash
+        run: |
+          set -e
+          sudo apt-get update
+          sudo apt-get install -y git-lfs file unzip zip
+
+      - name: Sparse checkout required APEX files
+        shell: bash
+        run: |
+          set -e
+          git lfs install
+          git clone --depth=1 --filter=blob:none --no-checkout "$DONOR_REPO" donor
+          cd donor
+          git lfs install
+          git sparse-checkout init --no-cone
+          git sparse-checkout set "$DONOR_TETHERING"
+          git sparse-checkout add "$DONOR_MEDIA"
+          git sparse-checkout add "$DONOR_SWCODEC"
+          git checkout
+          git rev-parse HEAD > ../donor-head.txt
+
+      - name: Verify and collect target files
+        shell: bash
+        run: |
+          set -e
+          mkdir -p "$OUT_DIR"
+
+          test -f "donor/$DONOR_TETHERING"
+          test -f "donor/$DONOR_MEDIA"
+          test -f "donor/$DONOR_SWCODEC"
+
+          cp "donor/$DONOR_TETHERING" "$OUT_DIR/"
+          cp "donor/$DONOR_MEDIA" "$OUT_DIR/"
+          cp "donor/$DONOR_SWCODEC" "$OUT_DIR/"
+
+          sha256sum "$OUT_DIR"/* > "$OUT_DIR/SHA256SUMS.txt"
+          file "$OUT_DIR"/* > "$OUT_DIR/FILE_TYPES.txt"
+          ls -lh "$OUT_DIR" > "$OUT_DIR/FILES.txt"
+
+          cp donor-head.txt "$OUT_DIR/DONOR_GIT_HEAD.txt"
+
+          tar -czf a34-oneui8-google-apex-targets.tar.gz "$OUT_DIR"
+
+          cat "$OUT_DIR/FILES.txt"
+          cat "$OUT_DIR/SHA256SUMS.txt"
+          cat "$OUT_DIR/FILE_TYPES.txt"
+
+      - name: Upload APEX targets
+        uses: actions/upload-artifact@v4
+        with:
+          name: a34-oneui8-google-apex-targets
+          path: |
+            a34-oneui8-google-apex-targets.tar.gz
+            a34-oneui8-google-apex/SHA256SUMS.txt
+            a34-oneui8-google-apex/FILES.txt
+            a34-oneui8-google-apex/FILE_TYPES.txt
+            a34-oneui8-google-apex/DONOR_GIT_HEAD.txt
+          if-no-files-found: error
+          retention-days: 3
