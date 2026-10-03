@@ -1,0 +1,66 @@
+name: Fetch A34 One UI 8 APEX targets
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    env:
+      DONOR_REPO: https://gitlab.com/oifaaahyeah/a34xdxx-user-16-BP2A.250605.031.A3-A346EXXUAEYI7-release-keys.git
+      OUT_DIR: a34-apex-targets
+
+    steps:
+      - name: Show runner disk
+        run: |
+          df -h
+          git --version
+
+      - name: Install Git LFS
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git-lfs
+          git lfs install
+
+      - name: Clone donor metadata
+        run: |
+          git clone --depth=1 --filter=blob:none --no-checkout "$DONOR_REPO" donor
+          cd donor
+          git sparse-checkout init --no-cone
+          git sparse-checkout set \
+            system/apex/com.android.tethering.apex \
+            system/apex/com.android.media.apex \
+            system/apex/com.android.media.swcodec.apex
+          git checkout
+
+      - name: Verify expected APEX files
+        run: |
+          test -f donor/system/apex/com.android.tethering.apex
+          test -f donor/system/apex/com.android.media.apex
+          test -f donor/system/apex/com.android.media.swcodec.apex
+
+      - name: Create evidence and archive
+        run: |
+          mkdir -p "$OUT_DIR"
+          cp donor/system/apex/com.android.tethering.apex "$OUT_DIR/"
+          cp donor/system/apex/com.android.media.apex "$OUT_DIR/"
+          cp donor/system/apex/com.android.media.swcodec.apex "$OUT_DIR/"
+          sha256sum "$OUT_DIR"/*.apex | tee "$OUT_DIR/SHA256SUMS.txt"
+          ls -lh "$OUT_DIR" | tee "$OUT_DIR/FILES.txt"
+          tar -czf a34-oneui8-apex-targets.tar.gz "$OUT_DIR"
+
+      - name: Upload APEX archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: a34-oneui8-apex-targets
+          path: |
+            a34-oneui8-apex-targets.tar.gz
+            a34-apex-targets/SHA256SUMS.txt
+            a34-apex-targets/FILES.txt
+          if-no-files-found: error
+          retention-days: 1
