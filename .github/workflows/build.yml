@@ -1,0 +1,59 @@
+name: Build Lucreticus Kernel (A31)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:       # تشغيل يدوي من صفحة Actions
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v3
+
+      - name: 🛠 Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu \
+            clang-14 \
+            make \
+            bc \
+            bison \
+            flex \
+            libssl-dev \
+            libelf-dev \
+            libncurses5-dev \
+            ccache \
+            zip
+
+      - name: 🔧 Prepare script
+        run: |
+          chmod +x ./build_lucreticus.sh
+
+      - name: 🚀 Run build script
+        # تقليل عدد الـ jobs داخل السكريبت لتجنب استهلاك الذاكرة
+        # إذا كان السكريبت يستخدم `make -j$(nproc)` يمكنك إلغاء ذلك
+        # عبر تعديل السكريبت أو إضافة المتغيّر التالي:
+        env:
+          MAKEFLAGS: "-j4"
+        run: |
+          ./build_lucreticus.sh
+
+      - name: 📦 Archive result
+        if: success()
+        run: |
+          cd out/arch/arm64/boot
+          zip -9 lucreticus_a31_bpf5.15.zip Image.gz-dtb
+          echo "ARTIFACT_PATH=$(pwd)/lucreticus_a31_bpf5.15.zip" >> $GITHUB_ENV
+
+      - name: 📤 Upload artifact
+        if: success()
+        uses: actions/upload-artifact@v3
+        with:
+          name: lucreticus_a31_bpf5.15
+          path: ${{ env.ARTIFACT_PATH }}
+          retention-days: 30   # يبقى الـ artifact 30 يومًا
