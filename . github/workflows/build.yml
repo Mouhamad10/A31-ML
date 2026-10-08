@@ -1,0 +1,63 @@
+name: Build Lucreticus Kernel (A31)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:   # اّسمح بتشغيل يدوي من صفحة Actions
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v3
+
+      - name: 🛠️ Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu \
+            clang-14 \
+            make \
+            bc \
+            bison \
+            flex \
+            libssl-dev \
+            libelf-dev \
+            libncurses5-dev \
+            ccache
+
+      - name: 🔧 Prepare build environment
+        run: |
+          # تمكين ccache لتقليل وقت البناء في مرات التشغيل المتكررة
+          export CCACHE_DIR=$HOME/.ccache
+          echo "CCACHE_DIR=$CCACHE_DIR" >> $GITHUB_ENV
+          # إعطاء صلاحية التنفيذ للسكريبت
+          chmod +x build_lucreticus.sh
+
+      - name: 🚀 Run build script
+        env:
+          # إذا أردت تمرير متغيّرات خاصة مثل رقم الإصدار أو خيارات إضافية
+          # مثال: KERNEL_VERSION=4.14.357
+          # KERNEL_VERSION: ${{ secrets.KERNEL_VERSION }}
+        run: |
+          # تشغيل السكريبت مع تقليل عدد الـ jobs لتفادي استهلاك الذاكرة
+          ./build_lucreticus.sh
+
+      - name: 📦 Archive built kernel
+        if: success()
+        run: |
+          # نفترض أن السكريبت ينتج الملف Image.gz-dtb داخل المجلد out/arch/arm64/boot
+          cd out/arch/arm64/boot
+          zip -9 lucreticus_a31_bpf5.15.zip Image.gz-dtb
+          echo "artifact_path=$(pwd)/lucreticus_a31_bpf5.15.zip" >> $GITHUB_ENV
+
+      - name: 📤 Upload artifact
+        if: success()
+        uses: actions/upload-artifact@v3
+        with:
+          name: lucreticus_a31_bpf5.15
+          path: ${{ env.artifact_path }}
+          retention-days: 30   # يبقى 30 يومًا في صفحة Artifacts
