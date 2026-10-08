@@ -35,9 +35,8 @@ jobs:
           chmod +x ./build_lucreticus.sh
 
       - name: 🚀 Run build script
-        # تقليل عدد الـ jobs داخل السكريبت لتجنب استهلاك الذاكرة
-        # إذا كان السكريبت يستخدم `make -j$(nproc)` يمكنك إلغاء ذلك
-        # عبر تعديل السكريبت أو إضافة المتغيّر التالي:
+        # إذا كان السكريبت يستخدم make -j$(nproc) قد يستهلك كل الذاكرة،  
+        # يمكنك تحديد عدد الـ jobs يدويًا عبر المتغيّر التالي:
         env:
           MAKEFLAGS: "-j4"
         run: |
@@ -52,7 +51,8 @@ jobs:
 
       - name: 📤 Upload artifact
         if: success()
-        uses: actions/upload-artifact@v3
+        # ← استبدل v3 بـ v4
+        uses: actions/upload-artifact@v4
         with:
           name: lucreticus_a31_bpf5.15
           path: ${{ env.ARTIFACT_PATH }}
